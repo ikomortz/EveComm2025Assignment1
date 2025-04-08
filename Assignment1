@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Apr  5 14:44:04 2025
+
+@author: ikotan
+"""
+import random
+import warnings
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPRegressor
+
+#Suppress convergence warnings
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+#Load dataset
+df = pd.read_csv("DailyDelhiClimateTrain.csv")
+
+#Handle missing values if any
+df.dropna(inplace=True)
+
+#Feature and target selection
+X = df[['humidity', 'wind_speed', 'meanpressure']]
+y = df['meantemp']
+
+#Standardize features
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+
+#Train-validation split
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+# PSO Configurationrameters
+
+#Define PSO Hyperparameters
+SWARM_SIZE = 10
+DIMENSIONS = 2  
+INFORMANTS = 3
+NUM_GENERATIONS = 20
+W = 0.729
+C1 = 1.49
+C2 = 1.49
+
+#Boundaries for the learning rate and the number of hidden neurons
+MIN_BOUNDARY = [0.0001, 5]   
+MAX_BOUNDARY = [0.1, 100]
+
+desired_precision = 1e-5 #Early stopping condition if MSE gets low enough
+
+#Model Evaluation
+def fitness_function(position):
+    lr = position[0]
+    hidden = int(position[1])
+    hidden = max(1, hidden)
+    model = MLPRegressor(hidden_layer_sizes=(hidden,), learning_rate_init=lr,
+                         max_iter=500, random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_val)
+    return np.mean((y_val - y_pred)**2)  # Minimize Mean Squared Error
+
+#Particle Class Definition
+class Particle:
+    def __init__(self):
+        self.position = [
+            random.uniform(MIN_BOUNDARY[0], MAX_BOUNDARY[0]), #Learning rate
+            random.uniform(MIN_BOUNDARY[1], MAX_BOUNDARY[1]) #Hidden layer size 
+        ]
+        self.velocity = [random.uniform(-1, 1) for _ in range(DIMENSIONS)]
+        self.fitness = fitness_function(self.position)
+        self.best_position = list(self.position)
+        self.best_fitness = self.fitness
+        self.informants = random.sample(range(SWARM_SIZE), INFORMANTS)
+        self.group_best_position = list(self.position)
+        self.group_best_fitness = self.fitness
+
+    def update_velocity(self):
+        for d in range(DIMENSIONS):
+            r1, r2 = random.random(), random.random()
+            cognitive = C1 * r1 * (self.best_position[d] - self.position[d])
+            social = C2 * r2 * (self.group_best_position[d] - self.position[d])
+            self.velocity[d] = W * self.velocity[d] + cognitive + social
+
+    def update_position(self):
+        for d in range(DIMENSIONS):
+            self.position[d] += self.velocity[d]
+            self.position[d] = max(MIN_BOUNDARY[d], min(MAX_BOUNDARY[d], self.position[d]))
+        self.fitness = fitness_function(self.position)
+
+    def update_group_best(self, swarm):
+        best_informant = min(
+            self.informants,
+            key=lambda i: swarm[i].best_fitness
+        )
+        if swarm[best_informant].best_fitness < self.group_best_fitness:
+            self.group_best_fitness = swarm[best_informant].best_fitness
+            self.group_best_position = list(swarm[best_informant].best_position)
+
+
+#PSO Execution
+swarm = [Particle() for _ in range(SWARM_SIZE)] #Initializes all particles
+
+#Track global best solution from across the swarm
+global_best = min(swarm, key=lambda p: p.best_fitness)
+global_best_position = list(global_best.best_position)
+global_best_fitness = global_best.best_fitness
+
+
+
+#PSO iterations
+for gen in range(NUM_GENERATIONS):
+    for particle in swarm:
+        particle.update_group_best(swarm)
+        particle.update_velocity()
+        particle.update_position()
+        if particle.fitness < particle.best_fitness:
+            particle.best_fitness = particle.fitness
+            particle.best_position = list(particle.position)
+    best_particle = min(swarm, key=lambda p: p.best_fitness)
+    if best_particle.best_fitness < global_best_fitness:
+        global_best_fitness = best_particle.best_fitness
+        global_best_position = list(best_particle.best_position)
+
+
+    print(f"Generation {gen+1}: Best MSE = {global_best_fitness:.4f}")
+
+    if global_best_fitness < desired_precision:
+        print("Desired precision reached.")
+        break
+
+
+
+#Train best model based on PSO results
+best_model = MLPRegressor(hidden_layer_sizes=(int(global_best_position[1]),),
+                          learning_rate_init=global_best_position[0],
+                          max_iter=500, random_state=42)
+best_model.fit(X_train, y_train)
+
+#Predict and visualize
+y_pred = best_model.predict(X_val)
+
+#Simple scatter plot
+plt.figure(figsize=(8, 5))
+plt.scatter(y_val, y_pred, alpha=0.5, color='blue')
+plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'r--', lw=2)
+plt.xlabel("Actual Mean Temperature")
+plt.ylabel("Predicted Mean Temperature")
+plt.title("Actual vs Predicted Mean Temperature (PSO-Tuned Model)")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+
+#Final Output
+print("\nOptimization Complete!")
+print(f"Best Learning Rate: {global_best_position[0]:.5f}")
+print(f"Best Hidden Neurons: {int(global_best_position[1])}")
+print(f"Validation MSE: {global_best_fitness:.4f}")
+
+
+# Traditional Model Implementation
+# Here, we manually set the hyperparameters instead of optimizing them
+
+# Define the traditional model with fixed hyperparameters
+traditional_model = MLPRegressor(hidden_layer_sizes=(10,), learning_rate_init=0.001,
+                                 max_iter=500, random_state=42)
+
+# Train the traditional model
+traditional_model.fit(X_train, y_train)
+
+# Evaluate the traditional model on the validation set
+traditional_y_pred = traditional_model.predict(X_val)
+
+# Calculate the validation MSE
+traditional_mse = np.mean((y_val - traditional_y_pred) ** 2)
+
+print(" ")
+print(f"Traditional Model Results:")
+print(f"Learning Rate: 0.001")
+print(f"Hidden Neurons: 10")
+print(f"Validation MSE: {traditional_mse:.4f}")
+
